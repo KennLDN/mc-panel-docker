@@ -279,24 +279,16 @@ const cancelEditing = () => {
     </div>
 
     <!-- Trigger Scan Button -->
-    <div class="mb-4">
-        <button 
-            @click="triggerScan"
-            :disabled="isTriggeringScan"
-            class="w-full px-3 py-1.5 text-xs font-medium text-center text-white bg-blue-600 rounded hover:bg-blue-700 focus:ring-4 focus:outline-none focus:ring-blue-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-            <span v-if="isTriggeringScan">Scanning...</span>
-            <span v-else>Scan Network</span>
-        </button>
+    <div class="mb-2">
         <div v-if="triggerError" class="mt-1 text-xs text-red-500">{{ triggerError }}</div>
         <div v-if="triggerSuccessMessage" class="mt-1 text-xs text-green-500">{{ triggerSuccessMessage }}</div>
     </div>
 
     <!-- Discovered Services Section -->
-    <div class="flex-1 overflow-y-auto flex flex-col gap-2">
+    <div class="flex-1 overflow-y-auto flex flex-col gap-3">
         <div v-if="isLoadingSSE && services.length === 0" class="text-neutral-500 text-xs">Connecting to service updates...</div>
         <!-- Display SSE Error independently -->
-        <div v-if="sseError" class="text-red-500 text-xs mb-2">{{ sseError }}</div> 
+        <!-- <div v-if="sseError" class="text-red-500 text-xs mb-2">{{ sseError }}</div>  -->
         
         <!-- Show "No services" only if truly empty and not loading/erroring -->
         <div v-if="!isLoadingSSE && services.length === 0 && !sseError" class="text-neutral-500 text-xs">No active services found. Scan network?</div>

@@ -23,3 +23,25 @@ If you need remote access, ensure you place it behind a secure authentication pr
 ## Development
 
 For development and building purposes, a `compose.dev.example.yml` file is provided as a starting point for a development-friendly setup.
+
+### Updating the Project
+
+**To update the entire project:**
+
+1.  Replace the `container` and `panel` folders with the latest versions.
+2.  Run the following command to rebuild and restart the services:
+    ```bash
+    docker compose up -d --no-deps --build
+    ```
+
+**To update only specific components (e.g., just the panel or a specific container):**
+
+1.  Replace the relevant folder (e.g., `panel`) with the latest version.
+2.  Run the following command, specifying the service(s) you want to rebuild and restart (e.g., `panel` and `vanilla`):
+    ```bash
+    docker compose up -d --no-deps --build <service-name...>
+    ```
+    *Example:*
+    ```bash
+    docker compose up -d --no-deps --build panel vanilla
+    ```
