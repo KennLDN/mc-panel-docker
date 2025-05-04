@@ -1,0 +1,37 @@
+# This is an example of how to use the docker-compose.yml file.
+# Edit only the servers section to add your servers.
+# Only the sections with comments need to be changed.
+
+networks:
+  MINECRAFT:
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.50.0.0/24
+          gateway: 172.50.0.1
+
+services:
+  panel:
+    build:
+      context: ./panel
+      dockerfile: Dockerfile
+    ports:
+      - 3000:3000
+    networks:
+      - MINECRAFT
+
+# define minecraft servers below
+
+# EXAMPLE SERVER
+  vanilla: # optionally change the name
+    build:
+      context: ./container
+      dockerfile: Dockerfile
+    volumes:
+      - ./servers/vanilla:/app/server # path to your server files
+    ports:
+      - 25565:25565 # change if you want to use a different port
+    environment:
+      - SERVER_CMD=java -Xms1G -Xmx1G -jar minecraft-server.jar nogui # command to start the server
+    networks:
+      - MINECRAFT

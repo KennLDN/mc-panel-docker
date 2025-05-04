@@ -1,0 +1,7 @@
+compose*.yml
+!*example.yml
+node_modules
+container/server
+panel/.nuxt
+panel/.output
+servers

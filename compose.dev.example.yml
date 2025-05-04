@@ -1,0 +1,38 @@
+services:
+  panel:
+    image: node:lts-slim
+    command: sh -c "npm install && npm run dev"
+    working_dir: /app/panel
+    volumes:
+      - ./panel:/app/panel
+      - panel_node_modules:/app/panel/node_modules
+    environment:
+      - TARGET_SUBNET=172.51.0.
+    networks:
+      - MINECRAFT-DEV
+
+  vanilla:
+    build:
+      context: ./container
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./servers/dev-vanilla:/app/server
+      - ./container:/app
+    ports:
+      - 25565:25565
+    environment:
+      - SERVER_CMD=java -Xms1G -Xmx1G -jar fabric-server.jar nogui
+    networks:
+      - MINECRAFT-DEV
+    command: node main.js
+
+networks:
+  MINECRAFT-DEV:
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.51.0.0/24
+          gateway: 172.51.0.1
+
+volumes:
+  panel_node_modules:
