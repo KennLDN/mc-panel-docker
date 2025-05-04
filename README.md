@@ -22,4 +22,4 @@ If you need remote access, ensure you place it behind a secure authentication pr
 
 ## Development
 
-For development and building purposes, a `
+For development and building purposes, a `compose.dev.example.yml` file is provided as a starting point for a development-friendly setup.
