@@ -17,6 +17,9 @@ services:
       dockerfile: Dockerfile
     ports:
       - 3000:3000
+    environment:
+      # - DISCORD_TOKEN= # add a bot token here to use the message relay
+      # - DISCORD_CLIENT_ID= # client id for the bot
     networks:
       - MINECRAFT
 

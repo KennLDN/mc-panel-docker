@@ -1,5 +1,6 @@
 import { WebSocket } from 'ws';
 import type { DiscoveredService } from '~/server/utils/mdnsUtils'; // Assuming this type exists
+import { interceptMessage } from './messageInterceptor'; // <-- Import the interceptor
 
 // --- Constants for Reconnection ---
 const INITIAL_RECONNECT_DELAY = 1000; // 1 second
@@ -121,6 +122,10 @@ const connectToTarget = (service: DiscoveredService): WebSocket | null => {
     });
 
     targetWs.on('message', (message, isBinary) => {
+      // ---- Intercept the message BEFORE relaying ----
+      interceptMessage(serviceName, message as Buffer | string, isBinary);
+      // -----------------------------------------------
+
       const clients = frontendClients.get(serviceName);
       if (clients) {
         clients.forEach(client => {

@@ -36,6 +36,8 @@ const { startRconHttpServer } = require('./rcon-http-service');
 const path = require('path');
 const rconState = require('./rcon-state');
 const { addLog: addLogToStore } = require('./log-store');
+const { parseTellraw } = require('./tellraw-parser');
+const { sanitizeHtml } = require('./html-sanitizer');
 
 // Object to hold the broadcast function, will be populated by websocket-service
 const broadcast = { func: null }; 
@@ -49,6 +51,9 @@ let outputBuffer = '';
 
 // 2. Ensure RCON is enabled and password is set
 ensureRconEnabled(serverPropsPath);
+
+// Define constants for RCON handling
+const RCON_SUPPRESS_MS = 1500; // How long the RCON window stays open
 
 // 3. Define callbacks for Minecraft server events
 const handleMinecraftOutput = (data) => {
@@ -65,47 +70,90 @@ const handleMinecraftOutput = (data) => {
       continue; // Skip empty lines
     }
 
-    // --- NEW FILTER for potential RCON command output ---
-    const RCON_SUPPRESS_MS = 1500; // Suppress for 1.5 seconds after RCON command timestamp
+    // --- RCON HANDLING LOGIC ---
 
-    // Check if timestamp is recent
-    if (rconState.rconResponseTimestamp && Date.now() - rconState.rconResponseTimestamp < RCON_SUPPRESS_MS)
-    {
-        // Define patterns/checks for different types of RCON-related output
+    // 1. Check for expired RCON window first
+    if (rconState.rconResponseTimestamp && Date.now() - rconState.rconResponseTimestamp >= RCON_SUPPRESS_MS) {
+        console.log("[DEBUG main] RCON window expired. Clearing RCON state.");
+        rconState.rconResponseTimestamp = null;
+        rconState.lastRconCommand = null;
+        rconState.parsedTellrawText = null;
+        // Keep capturedRconResponseLines, it was cleared by rcon-http for the response
+        // rconState.capturedRconResponseLines = null; 
+    }
 
-        // 1. Verbose patterns (e.g., Spark)
+    // 2. Check if we are currently *inside* an active RCON window
+    if (rconState.rconResponseTimestamp /* No need for Date.now() comparison here */) {
+        // --- ADDED LOGGING (Keep for now) ---
+        console.log(`[DEBUG main - RCON Window Active] Checking line: "${line}" (Tellraw Text State: ${rconState.parsedTellrawText ? '"' + rconState.parsedTellrawText + '"' : 'null'})`);
+        // --- END ADDED LOGGING ---
+
+        // --- USE PRE-PARSED TELLRAW TEXT (if available) ---
+        if (rconState.parsedTellrawText) {
+            const originalText = rconState.parsedTellrawText;
+            const sanitizedText = sanitizeHtml(originalText);
+            
+            // Format timestamp
+            const now = new Date();
+            const hours = now.getHours().toString().padStart(2, '0');
+            const minutes = now.getMinutes().toString().padStart(2, '0');
+            const seconds = now.getSeconds().toString().padStart(2, '0');
+            const timestamp = `${hours}:${minutes}:${seconds}`;
+
+            // Prepend timestamp and prefix
+            const formattedText = `[${timestamp}] [Discord Bridge] ${sanitizedText}`;
+
+            console.log(`[DEBUG main] Using pre-parsed, sanitized, formatted tellraw: "${formattedText}"`);
+
+            // Log and broadcast the FORMATTED text
+            const wasLogged = addLogToStore(serviceName, formattedText);
+            if (wasLogged && broadcast.func) {
+                broadcast.func(formattedText + '\n');
+            }
+
+            // Clear ALL relevant RCON state - this tellraw command is fully handled
+            console.log("[DEBUG main] Tellraw handled. Clearing RCON state.");
+            rconState.rconResponseTimestamp = null;
+            rconState.lastRconCommand = null;
+            rconState.parsedTellrawText = null;
+            // capturedRconResponseLines was already cleared by rcon-http
+
+            // Skip further processing for this specific log line
+            continue;
+        }
+        // --- END PRE-PARSED TELLRAW HANDLING ---
+
+        // --- GENERAL RCON OUTPUT SUPPRESSION --- 
+        // (Only runs if not handled as tellraw above)
         const isVerboseOutput = line.includes('[spark-worker-pool') || line.includes('[⚡]');
-
-        // 2. Simple feedback patterns (match common log formats for command output)
-        //    These need to match the *actual log line format*
-        //    Examples (adjust regex/patterns based on your server's specific log output):
         const isSimpleFeedback = 
-            // Matches lines like: [HH:MM:SS] [Server thread/INFO]: [Server] Some message
-            /^\S+ \S+ \S+ \[Server thread\/INFO\]: \[Server\]/.test(line) ||
-            // Matches lines like: [HH:MM:SS] [Server thread/INFO]: Rcon issued server command: /somecommand
-            /^\S+ \S+ \S+ \[Server thread\/INFO\]: Rcon issued server command:/.test(line) ||
-            // Matches specific command outputs directly if simpler
+            /^\[\d{2}:\d{2}:\d{2}\] \[Server thread\/INFO\]: \[Server\]/.test(line) ||
+            /^\[\d{2}:\d{2}:\d{2}\] \[Server thread\/INFO\]: Rcon issued server command:/.test(line) ||
             line.startsWith('Set the time to') || 
             line.startsWith('Player not found') ||
             line.includes('Unknown command') ||
-            line.includes('Incorrect argument for command'); // Add more specific patterns as needed
+            line.includes('Incorrect argument for command');
 
-        // Suppress if it matches *either* verbose or simple feedback patterns within the window
         if (isVerboseOutput || isSimpleFeedback) {
             console.log(`[DEBUG main] Suppressing potential RCON output (Verbose: ${isVerboseOutput}, Simple: ${isSimpleFeedback}): ${line}`); 
-            // --- CAPTURE START ---
-            // If capture is active, store the suppressed line
+            // If capture array still exists (before http timeout clears it), store the suppressed line
+            // Note: This capture is mainly for the HTTP response in rcon-http-service
             if (rconState.capturedRconResponseLines) { 
                 rconState.capturedRconResponseLines.push(line);
             }
-            // --- CAPTURE END ---
+            // Don't clear state here, let window expire or tellraw handler clear it
             continue; // Skip logging and broadcasting this line
         }
+        // --- END GENERAL RCON OUTPUT SUPPRESSION ---
 
+        // If inside the window, but not tellraw and not suppressed, fall through to normal logging.
+        // Still don't clear state here. The window expiration check at the start will handle it.
     }
-    // --- END NEW FILTER ---
+    // --- END RCON HANDLING LOGIC ---
 
-    // Attempt to add the log to the store using the main serviceName. This also applies the filtering.
+    // 3. Normal Log processing (runs if window expired or line wasn't handled/suppressed within window)
+    // Attempt to add the log to the store using the main serviceName.
+    // This also applies the filtering. Only runs if not suppressed above.
     const wasLogged = addLogToStore(serviceName, line);
 
     // Only broadcast if the line was not filtered by the log store

@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import type { DiscoveredService } from '~/server/utils/mdnsUtils';
 import type { ServiceFlags } from '~/server/utils/flagsUtils';
+// Import the modal component (Nuxt 3 auto-imports usually work, but explicit can be clearer)
+import DiscordConfigModal from '~/components/DiscordConfigModal.vue';
+import { useServiceRegistry } from '~/composables/useServiceRegistry'; // Import the composable
 
 // Define interface for the expected status response structure (matching the backend)
 interface StatusResponse {
@@ -42,6 +45,7 @@ interface ParsedTpsData {
 }
 
 const route = useRoute();
+const router = useRouter(); // Get router instance
 const serviceName = computed(() => route.params.name as string);
 const service = ref<DiscoveredService | null>(null);
 const isLoading = ref(true);
@@ -133,6 +137,20 @@ const formatSeconds = (totalSeconds: number): string => {
 
 let websocket: WebSocket | null = null;
 
+// --- Use Shared Service List --- (New)
+const { services: registeredServices } = useServiceRegistry();
+
+// --- Watcher for Service Deletion --- (New)
+watch(registeredServices, (newList) => {
+  if (serviceName.value && !newList.some(s => s.name === serviceName.value)) {
+    // Current service is no longer in the registered list
+    console.log(`Service ${serviceName.value} removed from registry. Redirecting to /`);
+    // Optionally show a message to the user before redirecting
+    // alert('This service is no longer available. Redirecting to the server list.');
+    router.push('/');
+  }
+}, { deep: true }); // Use deep: true to watch for changes within the array
+
 // --- Helper function to colorize log lines ---
 const colorizeLogLine = (line: string): string => {
   // 1. Colorize timestamp (blue)
@@ -154,6 +172,9 @@ const scrollToBottom = async () => {
     consoleOutputRef.value.scrollTop = consoleOutputRef.value.scrollHeight;
   }
 };
+
+// --- State for Discord Modal --- (New)
+const isDiscordModalOpen = ref(false);
 
 // Fetch service details, flags, and potentially start TPS polling
 const fetchInitialData = async () => {
@@ -675,6 +696,10 @@ const stopClientTicker = () => {
    }
 };
 
+const openDiscordModal = () => {
+  isDiscordModalOpen.value = true;
+};
+
 onMounted(() => {
   if (serviceName.value) {
     fetchInitialData(); // <-- Call the new combined fetch function
@@ -736,7 +761,7 @@ onUnmounted(() => {
               <h2 class="text-lg font-semibold mb-2 text-neutral-200">Live Console Output</h2>
               <div
                 ref="consoleOutputRef"
-                class="w-full h-[30rem] bg-neutral-800 text-neutral-200 p-3 rounded-md overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words font-mono text-sm border border-neutral-700 scrollbar-thin scrollbar-thumb-neutral-600 scrollbar-track-neutral-800"
+                class="w-full h-[38rem] bg-neutral-800 text-neutral-200 p-3 rounded-md overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words font-mono text-sm border border-neutral-700 scrollbar-thin scrollbar-thumb-neutral-600 scrollbar-track-neutral-800"
               >
                 <div v-if="historicalLogs.length > 0" class="text-neutral-400 italic opacity-50 mb-2 pb-2 border-b border-dashed border-neutral-600">
                   <div v-for="(log, index) in historicalLogs" :key="`hist-${index}`" v-html="log"></div>
@@ -956,10 +981,10 @@ onUnmounted(() => {
                    {{ enableTpsLoading ? 'Enabling...' : 'Track TPS [Requires spark!]' }}
                 </button>
 
-                <!-- Existing Discord Bot Button -->
+                <!-- Updated Discord Bot Button -->
                 <button
+                  @click="openDiscordModal" 
                   class="w-full mt-2 inline-flex justify-center items-center px-3 py-1.5 border border-neutral-600 text-xs font-medium rounded shadow-sm text-neutral-300 bg-neutral-700 hover:bg-neutral-600 focus:outline-none focus:ring-1 focus:ring-offset-2 focus:ring-offset-neutral-800 focus:ring-neutral-500 disabled:opacity-50 disabled:cursor-not-allowed transition duration-150 ease-in-out"
-                  disabled
                 >
                   Configure Discord Bot
                 </button>
@@ -969,6 +994,10 @@ onUnmounted(() => {
         </div>
 
     </div> <!-- End Flex container -->
+
+    <!-- Discord Config Modal -->
+    <DiscordConfigModal v-model="isDiscordModalOpen" />
+
   </div>
 </template>
 

@@ -6,6 +6,7 @@ const { getMinecraftServerPid } = require('./minecraft-server'); // Keep for /st
 const { getServerStats } = require('./server-stats');
 const rconState = require('./rcon-state');
 const { addLog, getLogs } = require('./log-store');
+const { parseTellraw } = require('./tellraw-parser'); // Import parser
 
 // const serviceName = 'rcon-http'; // Removed - use imported serviceName
 
@@ -224,10 +225,40 @@ async function handleRconRequest(req, res) {
       await rcon.connect();
       console.log(`RCON HTTP Service: Connected. Sending command: ${command}`);
 
+      // --- Pre-parse tellraw command if applicable ---
+      rconState.parsedTellrawText = null; // Reset before check
+      const commandTrimmed = command.trim();
+      const tellrawPrefix = 'tellraw @a ';
+      const slashTellrawPrefix = '/tellraw @a ';
+      let jsonPayload = null;
+
+      if (commandTrimmed.startsWith(tellrawPrefix)) {
+          jsonPayload = commandTrimmed.substring(tellrawPrefix.length);
+      } else if (commandTrimmed.startsWith(slashTellrawPrefix)) {
+          jsonPayload = commandTrimmed.substring(slashTellrawPrefix.length);
+      }
+
+      if (jsonPayload) {
+          try {
+              const parsed = parseTellraw(jsonPayload);
+              if (parsed) { // Store only if parsing yields text
+                  rconState.parsedTellrawText = parsed;
+                  console.log(`[DEBUG rcon-http] Pre-parsed tellraw: "${parsed}"`);
+              } else {
+                   console.log('[DEBUG rcon-http] Tellraw command parsed to empty string.');
+              }
+          } catch (parseError) {
+              console.error('[DEBUG rcon-http] Error pre-parsing tellraw JSON payload:', parseError);
+              // Leave parsedTellrawText as null
+          }
+      }
+      // --- End pre-parse ---
+
       // Initialize state for capturing response via main.js filtering
-      rconState.capturedRconResponseLines = []; 
+      rconState.capturedRconResponseLines = [];
+      rconState.lastRconCommand = command; // Store the command before setting timestamp
       rconState.rconResponseTimestamp = Date.now(); // Start suppression/capture window
-      console.log(`[DEBUG rcon-http] Initialized capture state. Timestamp: ${rconState.rconResponseTimestamp}`);
+      console.log(`[DEBUG rcon-http] Initialized capture state. Timestamp: ${rconState.rconResponseTimestamp}, Command: ${rconState.lastRconCommand}`);
 
       // Send the command - we ignore the direct response as it might be empty for verbose commands
       await rcon.send(command);
@@ -235,14 +266,16 @@ async function handleRconRequest(req, res) {
 
       // --- Wait for potential response lines to be captured by main.js --- 
       setTimeout(async () => {
-          console.log(`[DEBUG rcon-http] Capture timeout finished. Processing captured lines.`);
+          console.log(`[DEBUG rcon-http] Capture timeout finished. Processing captured lines for HTTP response.`);
           const capturedLines = rconState.capturedRconResponseLines || []; // Get captured lines
           const responseToSend = capturedLines.join('\n');
 
-          // --- Clear state --- 
-          rconState.rconResponseTimestamp = null; 
-          rconState.capturedRconResponseLines = null;
-          console.log(`[DEBUG rcon-http] Cleared capture state.`);
+          // --- Clear ONLY the captured lines array for HTTP response --- 
+          // rconState.rconResponseTimestamp = null; // DO NOT CLEAR HERE
+          rconState.capturedRconResponseLines = null; // Clear only this for HTTP response purpose
+          // rconState.lastRconCommand = null; // DO NOT CLEAR HERE
+          // rconState.parsedTellrawText = null; // DO NOT CLEAR HERE
+          console.log(`[DEBUG rcon-http] Cleared captured lines array (state for main.js persists).`);
 
           // --- Send HTTP response --- 
           if (!res.writableEnded) { // Check if response hasn't already been ended (e.g., by an error)
@@ -271,9 +304,11 @@ async function handleRconRequest(req, res) {
 
     } catch (error) {
       console.error('RCON HTTP Service Error:', error); 
-      rconState.rconResponseTimestamp = null;   // Clear timestamp on error
-      rconState.capturedRconResponseLines = null; // Clear capture state on error
-      console.log('[DEBUG rcon-http] Cleared capture state due to error.');
+      // rconState.rconResponseTimestamp = null;   // DO NOT CLEAR HERE
+      // rconState.capturedRconResponseLines = null; // Let main.js handle or expire
+      // rconState.lastRconCommand = null; // DO NOT CLEAR HERE
+      // rconState.parsedTellrawText = null; // DO NOT CLEAR HERE
+      console.log('[DEBUG rcon-http] RCON error occurred. State will be cleared by main.js or expiration.');
 
       // --- Send error response immediately --- 
       if (!res.writableEnded) {

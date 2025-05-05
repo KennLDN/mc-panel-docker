@@ -8,6 +8,8 @@ services:
       - panel_node_modules:/app/panel/node_modules
     environment:
       - TARGET_SUBNET=172.51.0.
+      # - DISCORD_TOKEN=
+      # - DISCORD_CLIENT_ID=
     networks:
       - MINECRAFT-DEV
 
