@@ -48,17 +48,6 @@ export async function startMdnsDiscovery() {
   await initializeServiceStorage(); // Ensure storage is ready
   const storage = useStorage('minecraft_services');
 
-  // Initialize connections for any services already in storage on startup
-  const initialServices = (await storage.getItem('discovered')) as DiscoveredService[] || [];
-  console.log(`[mDNS Plugin] Initializing connections for ${initialServices.length} stored services...`);
-  initialServices.forEach(service => {
-      if (service.status !== 'down') { // Only init if not known to be down
-          console.log(`[mDNS Plugin] Initializing connection on startup for: ${service.name}`);
-          initializeTargetConnection(service); // Use the manager
-      }
-  });
-
-
   bonjourInstance = new Bonjour();
   browserInstance = bonjourInstance.find({ type: 'minecraft-control' });
 
@@ -148,6 +137,23 @@ export async function startMdnsDiscovery() {
       await storage.setItem('discovered', updatedServices);
     }
   }, checkIntervalMs);
+
+  // Initialize connections for stored services *after* a short delay
+  // to allow mDNS browser to start without contention.
+  setTimeout(async () => {
+      try {
+          const initialServices = (await storage.getItem('discovered')) as DiscoveredService[] || [];
+          console.log(`[mDNS Plugin] Initializing connections for ${initialServices.length} stored services (delayed)...`);
+          initialServices.forEach(service => {
+              if (service.status !== 'down') { // Only init if not known to be down
+                  console.log(`[mDNS Plugin] Initializing connection on startup for: ${service.name}`);
+                  initializeTargetConnection(service); // Use the manager
+              }
+          });
+      } catch (error) {
+          console.error("[mDNS Plugin] Error during delayed initial connection setup:", error);
+      }
+  }, 1000); // 1-second delay
 }
 
 // --- Nitro Plugin Definition ---
