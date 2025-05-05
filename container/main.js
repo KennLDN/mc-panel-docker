@@ -1,3 +1,20 @@
+#!/usr/bin/env node
+
+// --- Global Error Handling ---
+process.on('uncaughtException', (error) => {
+  console.error('--- Uncaught Exception ---');
+  console.error(error);
+  // Intentionally NOT exiting. Log the error and continue.
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('--- Unhandled Rejection ---');
+  console.error('Reason:', reason);
+  console.error('Promise:', promise);
+  // Intentionally NOT exiting. Log the error and continue.
+});
+// --- End Global Error Handling ---
+
 const {
   serverCommand,
   serverDir,
