@@ -52,6 +52,7 @@ const wsStatus = ref<'connecting' | 'open' | 'closed' | 'error'>('connecting');
 const commandInput = ref('');
 const consoleOutputRef = ref<HTMLElement | null>(null);
 const relayWsUrlDisplay = ref('');
+const pendingCommands = ref<string[]>([]); // Queue for offline commands
 
 // State for service status
 const serviceStatus = ref<StatusResponse | null>(null);
@@ -164,14 +165,12 @@ const fetchInitialData = async () => {
   try {
     // Fetch Service Details first
     service.value = await $fetch<DiscoveredService>(`/api/services/${encodeURIComponent(serviceName.value)}`);
-    console.log('Fetched service details.');
 
     // Fetch Historical Logs
     try {
       const logs = await $fetch<string[]>(`/api/logs/${encodeURIComponent(serviceName.value)}`);
       // Colorize historical logs
       historicalLogs.value = logs.map(log => colorizeLogLine(log));
-      console.log(`Fetched and colorized ${historicalLogs.value.length} historical log lines.`);
     } catch (logErr: any) {
       console.error('Error fetching historical logs:', logErr);
       // Colorize error message if needed, though unlikely to contain a timestamp
@@ -213,7 +212,6 @@ const connectWebSocket = () => {
   const relayWsUrl = new URL(`/api/ws/relay/${encodeURIComponent(serviceName.value)}`, window.location.origin);
   relayWsUrl.protocol = relayWsUrl.protocol.replace('http', 'ws'); // Change http(s) to ws(s)
 
-  console.log(`Attempting to connect WebSocket to relay: ${relayWsUrl.href}`);
   wsStatus.value = 'connecting';
   wsMessages.value = []; // Clear previous messages on new connection attempt
 
@@ -221,8 +219,32 @@ const connectWebSocket = () => {
     websocket = new WebSocket(relayWsUrl.href);
 
     websocket.onopen = () => {
-      console.log('WebSocket relay connection established.');
       wsStatus.value = 'open';
+
+      // --- Send queued commands ---
+      if (pendingCommands.value.length > 0) {
+          console.log(`Sending ${pendingCommands.value.length} queued commands.`);
+          wsMessages.value.push('<span class="text-yellow-500">[System] Connection re-established. Sending queued commands...</span>');
+          const commandsToSend = [...pendingCommands.value]; // Copy queue
+          pendingCommands.value = []; // Clear queue immediately
+          commandsToSend.forEach(cmd => {
+              if (websocket && wsStatus.value === 'open') { // Double check connection still open
+                  websocket.send(cmd);
+                   // Add a confirmation that the *queued* command was sent now
+                  // wsMessages.value.push(`<span class="text-green-500">[Sent] > ${cmd}</span>`); // Optional: Confirmation
+              } else {
+                   // If connection dropped again *while* sending queue, re-queue remaining
+                   console.warn('WebSocket closed while sending queued command:', cmd);
+                   pendingCommands.value.push(cmd); // Re-add to queue
+                   wsMessages.value.push(`<span class="text-red-500">[Failed Re-queue] > ${cmd}</span>`);
+              }
+          });
+          if (pendingCommands.value.length === 0) {
+              wsMessages.value.push('<span class="text-yellow-500">[System] All queued commands sent.</span>');
+          } else {
+              wsMessages.value.push(`<span class="text-yellow-500">[System] ${pendingCommands.value.length} commands remain queued due to connection issues.</span>`);
+          }
+      }
     };
 
     websocket.onmessage = (event) => {
@@ -238,11 +260,9 @@ const connectWebSocket = () => {
       // Check if the last message was a sent command AND the new message is the plain echo of it
       if (match && match[1] && match[1].trim() === newMessage) {
         // This is an echo of the command we just sent, so we skip adding it.
-        console.log('Skipping echoed command:', newMessage);
       } else {
         // Colorize the message before adding it
         const colorizedMessage = colorizeLogLine(newMessage);
-        console.log('Adding colorized message:', colorizedMessage); // Log colorized message
         wsMessages.value.push(colorizedMessage);
       }
       // --- End filter ---
@@ -256,8 +276,9 @@ const connectWebSocket = () => {
     };
 
     websocket.onclose = (event) => {
-      console.log('WebSocket relay connection closed:', event.code, event.reason);
+      const previousStatus = wsStatus.value;
       wsStatus.value = 'closed';
+
       // Attempt to reconnect if the closure was unexpected
       if (!event.wasClean && serviceName.value) { // Check if serviceName is still valid
         console.log('WebSocket relay closed unexpectedly. Attempting to reconnect...');
@@ -278,21 +299,29 @@ const connectWebSocket = () => {
 };
 
 const sendCommand = () => {
-  if (websocket && wsStatus.value === 'open' && commandInput.value.trim()) {
-    const commandToSend = commandInput.value.trim();
-    console.log('Sending command via relay:', commandToSend);
+  const commandToSend = commandInput.value.trim();
+  if (!commandToSend) {
+      console.warn('Cannot send empty command.');
+      return;
+  }
+
+  if (websocket && wsStatus.value === 'open') {
     websocket.send(commandToSend);
     // Add the sent command to the message list for display
     wsMessages.value.push(`<span class="text-neutral-500">> ${commandToSend}</span>`);
-    commandInput.value = '';
-  } else if (wsStatus.value !== 'open') {
-    console.warn('WebSocket is not open. Cannot send command.');
-    // Optionally, provide feedback to the user
-    wsMessages.value.push('<span class="text-yellow-500">[System] Cannot send command: WebSocket not connected.</span>');
-  } else if (!commandInput.value.trim()) {
-    // Optionally, provide feedback if the input is empty
-    console.warn('Cannot send empty command.');
+  } else {
+    console.warn('WebSocket is not open. Queuing command:', commandToSend);
+    pendingCommands.value.push(commandToSend);
+    // Add the queued command to the message list for display with an indicator
+    wsMessages.value.push(`<span class="text-yellow-600">[Queued] > ${commandToSend}</span>`);
+    // Provide feedback that it's queued
+    // Note: Avoid adding too many system messages if connection flickers
+    // wsMessages.value.push('<span class="text-yellow-500">[System] Command queued. Will send upon reconnection.</span>');
   }
+
+  commandInput.value = '';
+  // Ensure console scrolls after adding message (queued or sent)
+  scrollToBottom();
 };
 
 // Watch for new messages and scroll down
@@ -321,7 +350,6 @@ const fetchServiceStatus = async () => {
                 clientUptimeBaseSeconds.value = newUptime;
                 clientUptimeBaseTimestamp.value = Date.now();
                 startClientTicker(); // Start or ensure the ticker is running
-                console.log(`Client uptime base reset. PID changed: ${statusData.pid !== previousPid}. New base: ${newUptime}s at ${clientUptimeBaseTimestamp.value}`);
             } else {
                 console.warn('Received invalid uptime value:', statusData.uptime);
                 stopClientTicker(); // Stop ticker if uptime is invalid
@@ -402,7 +430,6 @@ const fetchFlags = async () => {
     flagsError.value = null;
     try {
         serviceFlags.value = await $fetch<ServiceFlags>(`/api/flags/${encodeURIComponent(serviceName.value)}`);
-        console.log('Fetched service flags:', serviceFlags.value);
     } catch (err: any) {
         console.error('Error fetching service flags:', err);
         flagsError.value = err.data?.statusMessage || 'Failed to load service flags.';
@@ -568,7 +595,6 @@ const enableTpsTracking = async () => {
             body: { sparktps: true }
         });
         if (response.success) {
-            console.log('Successfully enabled sparktps flag.');
             serviceFlags.value = response.updatedFlags; // Update local state immediately
             // Watcher will handle starting the polling
         } else {
@@ -586,20 +612,17 @@ const enableTpsTracking = async () => {
 
 // --- Watcher for Spark TPS Flag --- (New)
 watch(() => serviceFlags.value?.sparktps, (isSparkTpsEnabled, wasEnabled) => {
-    console.log(`Spark TPS flag changed: ${wasEnabled} -> ${isSparkTpsEnabled}`);
     if (isSparkTpsEnabled) {
         // Flag is enabled, start polling
         tpsError.value = null; // Clear previous errors
         fetchTpsData(); // Fetch immediately
         if (tpsPollingInterval) clearInterval(tpsPollingInterval); // Clear old interval just in case
         tpsPollingInterval = setInterval(fetchTpsData, TPS_POLL_INTERVAL_MS);
-        console.log('Started TPS polling interval.');
     } else {
         // Flag is disabled or flags are null, stop polling
         if (tpsPollingInterval) {
             clearInterval(tpsPollingInterval);
             tpsPollingInterval = null;
-            console.log('Stopped TPS polling interval.');
         }
         // Clear TPS data when disabled
         tpsResult.value = null;
@@ -614,7 +637,6 @@ const startClientTicker = () => {
    clientTickerInterval = setInterval(() => {
        clientSideTicker.value++; // Increment to trigger computed update
    }, 1000);
-   console.log('Started client-side uptime ticker.');
 };
 
 // --- Function to stop the client-side ticker ---
@@ -624,7 +646,6 @@ const stopClientTicker = () => {
        clientTickerInterval = null;
        clientUptimeBaseSeconds.value = null;
        clientUptimeBaseTimestamp.value = null;
-       console.log('Stopped client-side uptime ticker and reset base values.');
    }
 };
 
@@ -640,7 +661,6 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (websocket) {
-    console.log('Closing WebSocket connection due to component unmount.');
     const wsInstance = websocket; // Capture instance before setting to null
     websocket = null; // Prevent reconnection attempts in onclose
     wsInstance.close(1000, 'Component unmounted'); // Close cleanly
@@ -651,7 +671,6 @@ onUnmounted(() => {
   if (tpsPollingInterval) {
     clearInterval(tpsPollingInterval);
     tpsPollingInterval = null;
-    console.log('Cleared TPS polling interval on unmount.');
   }
 });
 
@@ -697,9 +716,13 @@ onUnmounted(() => {
                   <div v-for="(log, index) in historicalLogs" :key="`hist-${index}`" v-html="log"></div>
                   <div class="mt-1">--- End of historical logs ---</div>
                 </div>
-                <div v-if="wsMessages.length === 0 && wsStatus === 'open'" class="text-neutral-500 italic animate-pulse">Waiting for messages...</div>
-                <div v-else-if="wsMessages.length === 0 && (wsStatus === 'connecting' || wsStatus === 'closed' || wsStatus === 'error')" class="text-neutral-500 italic">
-                  {{ wsStatus === 'connecting' ? 'Attempting connection...' : 'Not connected.' }}
+                <div v-if="wsMessages.length === 0" class="italic" :class="{
+                    'text-neutral-500 animate-pulse': wsStatus === 'open',
+                    'text-neutral-600': wsStatus !== 'open' // Darker color when not open
+                }">
+                    <template v-if="wsStatus === 'open'">Waiting for messages...</template>
+                    <template v-else-if="wsStatus === 'connecting'">Attempting connection...</template>
+                    <template v-else>Not connected.</template> <!-- Covers 'closed' and 'error' -->
                 </div>
                 <div v-for="(msg, index) in wsMessages" :key="index" v-html="msg"></div>
               </div>
@@ -715,13 +738,12 @@ onUnmounted(() => {
                 type="text"
                 placeholder="Enter command..."
                 class="flex-grow px-3 py-2 bg-neutral-700 border border-neutral-600 text-neutral-200 rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-neutral-500 focus:border-neutral-500 sm:text-sm placeholder-neutral-500 disabled:bg-neutral-800 disabled:text-neutral-500 disabled:cursor-not-allowed transition duration-150 ease-in-out"
-                :disabled="wsStatus !== 'open'"
                 @keyup.enter="sendCommand"
               />
               <button
                 @click="sendCommand"
                 class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-neutral-100 bg-neutral-600 hover:bg-neutral-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-neutral-800 focus:ring-neutral-500 disabled:opacity-50 disabled:cursor-not-allowed transition duration-150 ease-in-out"
-                :disabled="wsStatus !== 'open' || !commandInput.trim()"
+                :disabled="!commandInput.trim()"
               >
                 Send
               </button>

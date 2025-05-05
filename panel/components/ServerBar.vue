@@ -41,7 +41,6 @@ const connectSSE = () => {
   eventSource = new EventSource('/api/services/subscribe');
 
   eventSource.onopen = () => {
-    console.log('SSE connection opened.');
     isLoadingSSE.value = false;
   };
 
@@ -128,9 +127,14 @@ const triggerScan = async () => {
 // --- New Function to Fetch Server State --- 
 const fetchServerState = async (serviceName: string) => {
   // Avoid fetching if already loading this specific service
-  if (serverStateMap.value[serviceName] === 'loading' && !(services.value.find(s => s.name === serviceName))) return; // Avoid redundant fetches if starting up
+  // if (serverStateMap.value[serviceName] === 'loading' && !(services.value.find(s => s.name === serviceName))) return; // Avoid redundant fetches if starting up
   
-  serverStateMap.value[serviceName] = 'loading'; // Set to loading immediately
+  // Only set to loading if the state is unknown or error, not if it's already a known state
+  const currentState = serverStateMap.value[serviceName];
+  if (!currentState || currentState === 'error' || currentState === 'loading') {
+    serverStateMap.value[serviceName] = 'loading'; // Set to loading immediately only if needed
+  }
+  
   try {
     const state = await $fetch<ServerState>(`/api/server-state/${encodeURIComponent(serviceName)}`);
     serverStateMap.value[serviceName] = state; // Update with fetched state (online, inactive, offline)
@@ -142,7 +146,6 @@ const fetchServerState = async (serviceName: string) => {
 
 // --- New Function to Poll All Server States --- 
 const pollAllServerStates = () => {
-  console.log(`Polling states for ${services.value.length} services...`);
   services.value.forEach(service => {
     // Only poll if not currently in an error state or already loading
     if (serverStateMap.value[service.name] !== 'error' && serverStateMap.value[service.name] !== 'loading') {
@@ -183,7 +186,6 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (eventSource) {
-    console.log('Closing SSE connection.');
     eventSource.close();
     eventSource = null;
   }
@@ -201,7 +203,6 @@ watch(services, (newServices, oldServices) => {
 
   if (hasServices && !statePollInterval) {
     // Start polling if we now have services and polling isn't active
-    console.log('Services detected, starting state polling.');
     pollAllServerStates(); // Poll immediately upon getting services
     statePollInterval = setInterval(pollAllServerStates, 10000); 
   } else if (!hasServices && statePollInterval) {
