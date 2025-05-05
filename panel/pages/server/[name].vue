@@ -77,6 +77,58 @@ const tpsError = ref<string | null>(null);
 let tpsPollingInterval: ReturnType<typeof setInterval> | null = null;
 const TPS_POLL_INTERVAL_MS = 10000; // Poll TPS every 10 seconds
 
+// --- State for Client-Side Uptime Ticker ---
+const clientUptimeBaseSeconds = ref<number | null>(null);
+const clientUptimeBaseTimestamp = ref<number | null>(null);
+const clientSideTicker = ref<number>(0); // Updates every second to trigger computed property
+let clientTickerInterval: ReturnType<typeof setInterval> | null = null;
+
+// --- Computed Property for Formatted Uptime (Now uses client-side ticker) ---
+const formattedUptime = computed(() => {
+  // Trigger reactivity when the ticker updates
+  clientSideTicker.value;
+
+  if (clientUptimeBaseSeconds.value === null || clientUptimeBaseTimestamp.value === null) {
+    // Fallback to last polled value if client ticker isn't initialized
+    if (serviceStatus.value?.uptime && !isNaN(Number(serviceStatus.value.uptime))) {
+      return formatSeconds(Number(serviceStatus.value.uptime));
+    }
+    return 'N/A';
+  }
+
+  const elapsedSeconds = (Date.now() - clientUptimeBaseTimestamp.value) / 1000;
+  const currentUptimeSeconds = clientUptimeBaseSeconds.value + elapsedSeconds;
+
+  return formatSeconds(currentUptimeSeconds);
+});
+
+// Helper function to format seconds (extracted logic)
+const formatSeconds = (totalSeconds: number): string => {
+  if (totalSeconds < 0) return 'N/A';
+
+  const days = Math.floor(totalSeconds / (60 * 60 * 24));
+  const hours = Math.floor((totalSeconds % (60 * 60 * 24)) / (60 * 60));
+  const minutes = Math.floor((totalSeconds % (60 * 60)) / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+
+  const parts: { value: number; unit: string }[] = [
+    { value: days, unit: 'd' },
+    { value: hours, unit: 'h' },
+    { value: minutes, unit: 'm' },
+    { value: seconds, unit: 's' },
+  ];
+
+  const significantParts = parts.filter(part => part.value > 0);
+
+  if (significantParts.length === 0) {
+    // Handle case where totalSeconds is between 0 and 1
+    return totalSeconds < 1 ? '< 1s' : '0s';
+  }
+
+  const partsToShow = significantParts.slice(0, 2);
+  return partsToShow.map(part => `${part.value}${part.unit}`).join(' ');
+};
+
 let websocket: WebSocket | null = null;
 
 // --- Helper function to colorize log lines ---
@@ -258,7 +310,24 @@ const fetchServiceStatus = async () => {
     statusError.value = null;
     try {
         const statusData = await $fetch<StatusResponse>(`/api/status/${encodeURIComponent(serviceName.value)}`);
+        const previousPid = serviceStatus.value?.pid;
         serviceStatus.value = statusData;
+
+        // --- Update Client-Side Uptime Base ---
+        // Reset if PID changed or if it's the first fetch
+        if (clientUptimeBaseTimestamp.value === null || statusData.pid !== previousPid) {
+            const newUptime = Number(statusData.uptime);
+            if (!isNaN(newUptime)) {
+                clientUptimeBaseSeconds.value = newUptime;
+                clientUptimeBaseTimestamp.value = Date.now();
+                startClientTicker(); // Start or ensure the ticker is running
+                console.log(`Client uptime base reset. PID changed: ${statusData.pid !== previousPid}. New base: ${newUptime}s at ${clientUptimeBaseTimestamp.value}`);
+            } else {
+                console.warn('Received invalid uptime value:', statusData.uptime);
+                stopClientTicker(); // Stop ticker if uptime is invalid
+            }
+        }
+
     } catch (err: any) {
         // Check if the error is a 404, indicating the server might be offline
         if (err?.response?.status === 404) {
@@ -266,6 +335,7 @@ const fetchServiceStatus = async () => {
             serviceStatus.value = null; // Clear status
             statusError.value = 'offline'; // Set specific state for offline
             stopStatusPolling(); // Stop polling if server is offline
+            stopClientTicker(); // Stop client ticker if server is offline
         } else {
             // Handle other errors as before
             console.error('Error fetching service status:', err);
@@ -538,6 +608,26 @@ watch(() => serviceFlags.value?.sparktps, (isSparkTpsEnabled, wasEnabled) => {
     }
 }, { immediate: false }); // Don't run immediately, let fetchFlags populate first
 
+// --- Function to start the client-side ticker ---
+const startClientTicker = () => {
+   if (clientTickerInterval) return; // Already running
+   clientTickerInterval = setInterval(() => {
+       clientSideTicker.value++; // Increment to trigger computed update
+   }, 1000);
+   console.log('Started client-side uptime ticker.');
+};
+
+// --- Function to stop the client-side ticker ---
+const stopClientTicker = () => {
+   if (clientTickerInterval) {
+       clearInterval(clientTickerInterval);
+       clientTickerInterval = null;
+       clientUptimeBaseSeconds.value = null;
+       clientUptimeBaseTimestamp.value = null;
+       console.log('Stopped client-side uptime ticker and reset base values.');
+   }
+};
+
 onMounted(() => {
   if (serviceName.value) {
     fetchInitialData(); // <-- Call the new combined fetch function
@@ -556,6 +646,7 @@ onUnmounted(() => {
     wsInstance.close(1000, 'Component unmounted'); // Close cleanly
   }
   stopStatusPolling(); // Stop fetching status when leaving the page
+  stopClientTicker(); // Stop client ticker when leaving the page
   // Stop TPS polling when leaving the page (New)
   if (tpsPollingInterval) {
     clearInterval(tpsPollingInterval);
@@ -578,11 +669,11 @@ onUnmounted(() => {
       </template>
     </h1>
 
-    <!-- Flex container for columns -->
-    <div class="flex space-x-6">
+    <!-- Flex container for columns - Updated for responsive layout -->
+    <div class="flex flex-col lg:flex-row space-y-6 lg:space-y-0 lg:space-x-6">
 
-      <!-- Main content column (2/3 width) -->
-      <div class="w-2/3">
+      <!-- Main content column (Full width by default, 2/3 on lg+) -->
+      <div class="w-full lg:w-2/3">
         <div v-if="isLoading" class="flex items-center text-neutral-400">
           <svg class="animate-spin -ml-1 mr-2 h-5 w-5 text-neutral-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -647,8 +738,8 @@ onUnmounted(() => {
         </NuxtLink>
       </div> <!-- End Main content column -->
 
-      <!-- New empty column (1/3 width) -->
-      <div class="w-1/3 bg-neutral-800/50 rounded-md space-y-6">
+      <!-- Right sidebar column (Full width by default, 1/3 on lg+) -->
+      <div class="w-full lg:w-1/3 bg-neutral-800/50 rounded-md space-y-6 p-4"> <!-- Added padding -->
         <!-- Control Buttons -->
         <div>
             <h3 class="text-lg font-semibold text-neutral-200 mb-3 border-b border-neutral-700 pb-2">Server Control</h3>
@@ -796,7 +887,7 @@ onUnmounted(() => {
                 <p>CPU: <code class="bg-neutral-700 text-neutral-200 px-1.5 py-0.5 rounded text-xs">{{ serviceStatus.cpu }}%</code></p>
                 <p>Memory: <code class="bg-neutral-700 text-neutral-200 px-1.5 py-0.5 rounded text-xs">{{ serviceStatus.memory }} MB</code></p>
                 <p>PID: <code class="bg-neutral-700 text-neutral-200 px-1.5 py-0.5 rounded text-xs">{{ serviceStatus.pid }}</code></p>
-                <p>Uptime: <code class="bg-neutral-700 text-neutral-200 px-1.5 py-0.5 rounded text-xs">{{ serviceStatus.uptime }} seconds</code></p>
+                <p>Uptime: <code class="bg-neutral-700 text-neutral-200 px-1.5 py-0.5 rounded text-xs">{{ formattedUptime }}</code></p>
               </div>
               <div v-else class="text-neutral-500 text-xs italic">
                 No status data available.
