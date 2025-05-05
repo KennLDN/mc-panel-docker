@@ -75,8 +75,9 @@ const enableTpsLoading = ref(false); // Loading state for enabling TPS
 const tpsResult = ref<ParsedTpsData | null>(null); // Changed to hold parsed data
 const tpsLoading = ref(false);
 const tpsError = ref<string | null>(null);
-let tpsPollingInterval: ReturnType<typeof setInterval> | null = null;
+let tpsPollingInterval: ReturnType<typeof setInterval> | null = null; // <<< Changed back to let
 const TPS_POLL_INTERVAL_MS = 10000; // Poll TPS every 10 seconds
+const delayFirstTpsFetch = ref(false); // New flag for the button-press delay
 
 // --- State for Client-Side Uptime Ticker ---
 const clientUptimeBaseSeconds = ref<number | null>(null);
@@ -596,7 +597,8 @@ const enableTpsTracking = async () => {
         });
         if (response.success) {
             serviceFlags.value = response.updatedFlags; // Update local state immediately
-            // Watcher will handle starting the polling
+            delayFirstTpsFetch.value = true; // <<< Set the flag HERE
+            // Watcher will handle starting the polling and the initial fetch (potentially delayed)
         } else {
              throw new Error('API reported failure.'); // Should not happen with current backend but good practice
         }
@@ -610,20 +612,44 @@ const enableTpsTracking = async () => {
     }
 };
 
-// --- Watcher for Spark TPS Flag --- (New)
+// --- Watcher for Spark TPS Flag --- (Revised Again)
 watch(() => serviceFlags.value?.sparktps, (isSparkTpsEnabled, wasEnabled) => {
+    // Clear any existing interval when the flag state changes
+    if (tpsPollingInterval) {
+        clearInterval(tpsPollingInterval);
+        tpsPollingInterval = null;
+    }
+
     if (isSparkTpsEnabled) {
-        // Flag is enabled, start polling
+        // Flag is enabled
         tpsError.value = null; // Clear previous errors
-        fetchTpsData(); // Fetch immediately
-        if (tpsPollingInterval) clearInterval(tpsPollingInterval); // Clear old interval just in case
-        tpsPollingInterval = setInterval(fetchTpsData, TPS_POLL_INTERVAL_MS);
-    } else {
-        // Flag is disabled or flags are null, stop polling
-        if (tpsPollingInterval) {
-            clearInterval(tpsPollingInterval);
-            tpsPollingInterval = null;
+
+        // Function to start polling (to avoid repetition)
+        const startPolling = () => {
+            // Clear again just in case of race conditions
+            if (tpsPollingInterval) clearInterval(tpsPollingInterval);
+            tpsPollingInterval = setInterval(fetchTpsData, TPS_POLL_INTERVAL_MS);
+        };
+
+        // Check if the delay flag is set (meaning the button was just pressed)
+        if (delayFirstTpsFetch.value) {
+            delayFirstTpsFetch.value = false; // Consume the flag
+            // Delay the *first* fetch only
+            setTimeout(() => {
+                // Double-check the flag is still enabled before fetching
+                if (serviceFlags.value?.sparktps) {
+                    fetchTpsData();
+                    startPolling(); // Start polling AFTER the delayed fetch
+                }
+            }, 5000); // 5-second delay
+        } else {
+            // Fetch immediately if the flag became true for other reasons or is already enabled
+            fetchTpsData();
+            startPolling(); // Start polling AFTER the immediate fetch
         }
+
+    } else {
+        // Flag is disabled or flags are null, stop polling (already handled at the start of the watcher)
         // Clear TPS data when disabled
         tpsResult.value = null;
         tpsLoading.value = false;
@@ -861,19 +887,7 @@ onUnmounted(() => {
         <!-- Simplified Service Info -->
         <div v-if="service && !isLoading && !error" class="text-sm text-neutral-400 space-y-3">
              <h3 class="text-lg font-semibold text-neutral-200 mb-3 border-b border-neutral-700 pb-2">Connection Info</h3>
-             <p>
-               Relaying via: <br>
-               <code class="bg-neutral-700 text-neutral-200 px-1.5 py-0.5 rounded text-xs inline-block mt-1 break-all">{{ relayWsUrlDisplay }}</code>
-             </p>
-             <p>
-               Target: <br>
-               <code class="bg-neutral-700 text-neutral-200 px-1.5 py-0.5 rounded text-xs inline-block mt-1">ws://{{ service.address }}:8080/</code>
-             </p>
-             <p>
-               Status Endpoint: <br>
-               <code class="bg-neutral-700 text-neutral-200 px-1.5 py-0.5 rounded text-xs inline-block mt-1">http://{{ service.address }}:8081/status</code>
-             </p>
-             <div class="flex items-center space-x-2 pt-2">
+              <div class="flex items-center space-x-2 pt-2">
                 <span class="font-medium text-neutral-300">Relay Status:</span>
                 <span class="px-2 py-0.5 rounded-full text-xs font-medium border" :class="{
                   'bg-yellow-700/20 text-yellow-300 border-yellow-700/50': wsStatus === 'connecting',
@@ -884,6 +898,14 @@ onUnmounted(() => {
                   {{ wsStatus }}
                 </span>
               </div>
+             <p>
+               Relaying via: <br>
+               <code class="bg-neutral-700 text-neutral-200 px-1.5 py-0.5 rounded text-xs inline-block mt-1 break-all">{{ relayWsUrlDisplay }}</code>
+             </p>
+             <p>
+               Internal Target: <br>
+               <code class="bg-neutral-700 text-neutral-200 px-1.5 py-0.5 rounded text-xs inline-block mt-1">{{ service.address }}</code>
+             </p>
           </div>
           <div v-else-if="!isLoading" class="text-neutral-500 italic text-sm p-4">
             Connection info unavailable.
