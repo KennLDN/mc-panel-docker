@@ -10,6 +10,9 @@ networks:
         - subnet: 172.50.0.0/24
           gateway: 172.50.0.1
 
+volumes:
+  panel-data:
+
 services:
   panel:
     build:
@@ -20,6 +23,8 @@ services:
     environment:
       # - DISCORD_TOKEN= # add a bot token here to use the message relay
       # - DISCORD_CLIENT_ID= # client id for the bot
+    volumes:
+      - panel-data:/app/.data
     networks:
       - MINECRAFT
 

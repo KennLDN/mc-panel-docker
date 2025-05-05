@@ -173,26 +173,17 @@ const handleMinecraftClose = (code, wasIntentional) => {
     broadcast.func(`Server process exited with code ${exitCode} (Reason: ${reason})`);
   }
 
-  // Only perform full shutdown if the stop was NOT intentional
+  // Only perform *logging* and broadcast if the stop was NOT intentional
   if (!wasIntentional) {
-      console.log('Unexpected server exit detected. Shutting down wrapper application...');
-      unpublishService(() => {
-          console.log('mDNS service unpublished on server close');
-          if (wss) {
-              wss.close(() => console.log('WebSocket server closed on server exit'));
-          }
-          // rconHttpServer might need closing too? Let's add it.
-          if (rconHttpServer) {
-               rconHttpServer.close(() => console.log('RCON HTTP server closed on server exit'));
-          }
-          process.exit(exitCode);
-      });
+      console.log('Unexpected server exit detected. Wrapper application WILL REMAIN RUNNING.');
+      // Removed: unpublishService, wss.close, rconHttpServer.close, process.exit
+      // The control interface (WebSocket, HTTP, mDNS) remains active
+      // to allow for potential restart commands or status checks.
   } else {
        console.log('Intentional server stop detected. Wrapper application will continue running.');
-       // Optionally, unpublish mDNS service if stopped intentionally?
+       // We might still want to unpublish mDNS on intentional stop, depending on desired behavior.
+       // For now, keep it published to allow restart commands.
        // unpublishService(() => console.log('mDNS service unpublished on intentional stop'));
-       // For now, let's keep mDNS running so the controls are still discoverable
-       // to potentially restart the server later.
   }
 };
 
